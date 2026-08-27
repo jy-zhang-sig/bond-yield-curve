@@ -15,6 +15,7 @@ import os
 import re
 import sys
 import time
+import calendar
 from datetime import date, datetime, timedelta, timezone
 from typing import Dict, Iterable, List, Optional
 
@@ -1013,9 +1014,272 @@ def generate_summary():
     save_json(SUMMARY_FILE, summary)
 
 
+
+# ================================================================
+# 预定利率研究值 — data/predictions.json 生成
+# 逻辑与参考站 sig546/preset-rate-research（scripts/update_predictions.py）一致：
+#   税收溢价 = max(国开-国债, 进出口-国债) 的移动平均
+#   基础回报 = min(国债MA250+溢价250, 国债MA750+溢价750)
+#   参考利率 = 6个月(5Y LPR + 5Y定存)/2 的均值
+#   预测值   = 分段系数调节( min(参考利率, 基础回报) )
+#   未来季度 = 平推法（用最新利率平推至季度末，MA窗口缓慢渐变）
+# 数据源：复用已抓取的中债登到期收益率（不额外访问外部源）
+# ================================================================
+PRESET_PRED_FILE = "data/predictions.json"
+PRESET_ACTUALS_FILE = "data/actuals.json"
+PRESET_10Y_TERM = "10Y"
+PRESET_SEGMENT_COEFF = [
+    (0.00, 1.00, 1.00), (1.00, 2.00, 1.00), (2.00, 2.50, 0.95),
+    (2.50, 3.00, 0.95), (3.00, 3.50, 0.50),
+    (3.50, 4.00, 0.50), (4.00, 10.00, 0.30),
+]
+PRESET_MAX_RATE = 2.00          # 当前普通型预定利率最高值（2025-09-01 起）
+PRESET_TRIGGER_THRESHOLD = 0.25  # 25BP 触发线
+PRESET_VALIDATION_MAX_CHANGE_BP = 50
+# 人工维护：5年期以上LPR 与 六大行5年定存均值 的调整记录（日期, 值）
+PRESET_LPR_HISTORY = [("2025-05-20", 3.5)]
+PRESET_DEPOSIT_HISTORY = [
+    ("2023-12-22", 2.00), ("2024-07-25", 1.80),
+    ("2024-10-18", 1.55), ("2025-05-20", 1.30),
+]
+
+
+def preset_rate_for_month(year: int, month: int, history: List[tuple]) -> float:
+    """取指定月份适用的利率（最新一次 <= 月末 的调整，与参考站一致）"""
+    month_end = date(year, month, calendar.monthrange(year, month)[1])
+    rate = history[0][1] if history else 3.50
+    for d, r in history:
+        if date.fromisoformat(d) <= month_end:
+            rate = r
+    return rate
+
+
+def preset_load_bond_rows() -> List[dict]:
+    """从已生成的中债登到期收益率文件提取 国债/国开/进出口 10Y 日频序列"""
+    def extract(filepath: str) -> dict:
+        data = load_existing(filepath)
+        if not data.get("terms") or PRESET_10Y_TERM not in data["terms"]:
+            return {}
+        idx = data["terms"].index(PRESET_10Y_TERM)
+        out = {}
+        for i, d in enumerate(data.get("dates", [])):
+            try:
+                v = data["rows"][i][idx]
+            except (IndexError, TypeError):
+                v = None
+            if v is not None:
+                out[d] = v
+        return out
+
+    gov = extract("data_gov_ytm.json")
+    cdb = extract("data_cdb_ytm.json")
+    ieb = extract("data_exim_ytm.json")
+    rows = []
+    for d in sorted(set(gov) | set(cdb) | set(ieb)):
+        rows.append({"date": d, "gov_10y": gov.get(d), "cdb_10y": cdb.get(d), "ieb_10y": ieb.get(d)})
+    return rows
+
+
+def preset_compute_ma(bond_rows: List[dict], comp_date: str, window: int, field: str) -> Optional[float]:
+    cutoff = comp_date[:10]
+    values = [r[field] for r in bond_rows if r["date"] <= cutoff and r.get(field) is not None]
+    if not values:
+        return None
+    n = min(window, len(values))
+    return sum(values[-n:]) / n
+
+
+def preset_compute_spread_ma(bond_rows: List[dict], comp_date: str, window: int) -> float:
+    """max(cdb-gov, ieb-gov) 的移动平均（与参考站一致）"""
+    cutoff = comp_date[:10]
+    eligible = [r for r in bond_rows if r["date"] <= cutoff]
+    spreads = []
+    for r in eligible[-window:]:
+        s1 = r["cdb_10y"] - r["gov_10y"] if (r.get("cdb_10y") is not None and r.get("gov_10y") is not None) else None
+        s2 = r["ieb_10y"] - r["gov_10y"] if (r.get("ieb_10y") is not None and r.get("gov_10y") is not None) else None
+        if s1 is not None or s2 is not None:
+            spreads.append(max(s1 if s1 is not None else -99, s2 if s2 is not None else -99))
+    if not spreads:
+        return 0.0912  # 默认利差（与参考站一致）
+    return sum(spreads) / len(spreads)
+
+
+def preset_extend_bond_to_date(bond_rows: List[dict], comp_date: str) -> List[dict]:
+    """平推法：用最后已知值填充 (最后日期, comp_date] 的工作日（与参考站一致）"""
+    if not bond_rows:
+        return bond_rows
+    cutoff = comp_date[:10]
+    last_date = max(r["date"] for r in bond_rows)
+    if last_date >= cutoff:
+        return bond_rows
+    base = None
+    for r in reversed(bond_rows):
+        if r.get("gov_10y") is not None:
+            base = r
+            break
+    if base is None:
+        return bond_rows
+    lg, lc, li = base.get("gov_10y"), base.get("cdb_10y"), base.get("ieb_10y")
+    ext = list(bond_rows)
+    d = date.fromisoformat(last_date) + timedelta(days=1)
+    end = date.fromisoformat(cutoff)
+    while d <= end:
+        if d.weekday() < 5:  # 仅工作日
+            ext.append({"date": d.isoformat(), "gov_10y": lg, "cdb_10y": lc, "ieb_10y": li})
+        d += timedelta(days=1)
+    return ext
+
+
+def preset_apply_segment(pre_val: float) -> float:
+    """分段系数调节（与参考站一致）"""
+    total = 0.0
+    for low, high, coeff in PRESET_SEGMENT_COEFF:
+        if pre_val > high:
+            total += (high - low) * coeff
+        elif pre_val > low:
+            total += (pre_val - low) * coeff
+        else:
+            break
+    return round(total, 4)
+
+
+def preset_compute_prediction(comp_date: str, bond_rows: List[dict]) -> dict:
+    bond_rows = preset_extend_bond_to_date(bond_rows, comp_date)
+    comp_dt = date.fromisoformat(comp_date[:10])
+
+    # 参考利率：6个月 (LPR + 定存)/2 的均值
+    ref_rates = []
+    for i in range(5, -1, -1):
+        y, m = comp_dt.year, comp_dt.month - i
+        while m <= 0:
+            y -= 1
+            m += 12
+        ref_rates.append((preset_rate_for_month(y, m, PRESET_LPR_HISTORY) + preset_rate_for_month(y, m, PRESET_DEPOSIT_HISTORY)) / 2)
+    ref_rate = sum(ref_rates) / len(ref_rates)
+
+    ma250_gov = preset_compute_ma(bond_rows, comp_date, 250, "gov_10y")
+    ma750_gov = preset_compute_ma(bond_rows, comp_date, 750, "gov_10y")
+    spread_250 = preset_compute_spread_ma(bond_rows, comp_date, 250)
+    spread_750 = preset_compute_spread_ma(bond_rows, comp_date, 750)
+
+    base_250 = (ma250_gov if ma250_gov is not None else 0.0) + spread_250
+    base_750 = (ma750_gov if ma750_gov is not None else 0.0) + spread_750
+    base_return = min(base_250, base_750)
+    pre_adj = min(ref_rate, base_return)
+    predicted = preset_apply_segment(pre_adj)
+    return {
+        "ref_rate": round(ref_rate, 4),
+        "base_return": round(base_return, 4),
+        "ma250_gov": round(ma250_gov, 4) if ma250_gov is not None else None,
+        "ma750_gov": round(ma750_gov, 4) if ma750_gov is not None else None,
+        "spread_250": round(spread_250, 4),
+        "spread_750": round(spread_750, 4),
+        "predicted": round(predicted, 4),
+    }
+
+
+def preset_get_prediction_quarters() -> List[dict]:
+    """基于 actuals.json 最新季度，生成未来4个预测季度（与参考站一致）"""
+    try:
+        with open(PRESET_ACTUALS_FILE, "r", encoding="utf-8") as f:
+            actuals_data = json.load(f)
+    except Exception:
+        return []
+    actuals = actuals_data.get("actuals", [])
+    if not actuals:
+        return []
+    latest = actuals[-1]
+    latest_q = latest["quarter"]
+    year = int(latest_q[:4])
+    q = int(latest_q[5:])
+    quarters = []
+    for _ in range(4):
+        q += 1
+        if q > 4:
+            q = 1
+            year += 1
+        quarter = f"{year}Q{q}"
+        announce_map = {1: f"{year}年4月", 2: f"{year}年7月", 3: f"{year}年10月", 4: f"{year+1}年1月"}
+        comp_month_map = {1: 3, 2: 6, 3: 9, 4: 12}
+        comp_date = f"{year}-{comp_month_map[q]:02d}-{calendar.monthrange(year, comp_month_map[q])[1]}"
+        quarters.append({"quarter": quarter, "announced": announce_map[q], "comp_date": comp_date})
+    return quarters
+
+
+def generate_predictions() -> bool:
+    """生成 data/predictions.json（参考站逻辑，复用已抓取中债登数据）"""
+    print("[preset-predictions] 生成 data/predictions.json ...")
+    bond_rows = preset_load_bond_rows()
+    if len(bond_rows) < 100:
+        print("[preset-predictions] WARN: 债券数据不足100条，预测可能不准确")
+    quarters = preset_get_prediction_quarters()
+    if not quarters:
+        print("[preset-predictions] actuals.json 为空，无法确定预测季度")
+        return False
+
+    old_preds = []
+    try:
+        with open(PRESET_PRED_FILE, "r", encoding="utf-8") as f:
+            old_preds = json.load(f).get("predictions", [])
+    except Exception:
+        pass
+
+    new_predictions = []
+    warnings = []
+    for i, q in enumerate(quarters):
+        result = preset_compute_prediction(q["comp_date"], bond_rows)
+        gap_bp = round((PRESET_MAX_RATE - result["predicted"]) * 100, 1)
+        entry = {
+            "quarter": q["quarter"],
+            "announced": q["announced"],
+            "predicted_value": result["predicted"],
+            "ref_rate": result["ref_rate"],
+            "base_return": result["base_return"],
+            "ma250_gov": result["ma250_gov"],
+            "ma750_gov": result["ma750_gov"],
+            "spread_250": result["spread_250"],
+            "spread_750": result["spread_750"],
+            "max_rate": PRESET_MAX_RATE,
+            "gap_bp": gap_bp,
+            "trigger": gap_bp >= PRESET_TRIGGER_THRESHOLD * 100,
+        }
+        new_predictions.append(entry)
+        # 校验（与参考站一致：变动过大告警、单季度合理性）
+        if i < len(old_preds) and old_preds[i].get("quarter") == entry["quarter"]:
+            change_bp = abs(entry["predicted_value"] - old_preds[i]["predicted_value"]) * 100
+            if change_bp > PRESET_VALIDATION_MAX_CHANGE_BP:
+                warnings.append(f"⚠️ {entry['quarter']} 预测值变动 {change_bp:.1f}BP（上期 {old_preds[i]['predicted_value']}%），超过 {PRESET_VALIDATION_MAX_CHANGE_BP}BP")
+        if entry["predicted_value"] < 0.5 or entry["predicted_value"] > 4.0:
+            warnings.append(f"⚠️ {entry['quarter']} 预测值 {entry['predicted_value']}% 明显异常")
+        print(f"  {q['quarter']} ({q['announced']}): {result['predicted']:.4f}% (差值 {gap_bp}BP)")
+
+    latest_gov = None
+    for r in reversed(bond_rows):
+        if r.get("gov_10y") is not None:
+            latest_gov = r["gov_10y"]
+            break
+    now = datetime.now(BJ_TZ)
+    output = {
+        "last_updated": now.strftime("%Y-%m-%d %H:%M"),
+        "method": "平推法",
+        "description": "预定利率研究值模型预测",
+        "base_data": {
+            "lpr_5y": preset_rate_for_month(now.year, now.month, PRESET_LPR_HISTORY),
+            "deposit_5y": preset_rate_for_month(now.year, now.month, PRESET_DEPOSIT_HISTORY),
+            "bond_yield_10y": latest_gov,
+        },
+        "predictions": new_predictions,
+        "validation_warnings": warnings,
+    }
+    save_json(PRESET_PRED_FILE, output)
+    print(f"[preset-predictions] data/predictions.json 已更新（{len(new_predictions)} 季度，{len(warnings)} 条告警）")
+    return True
+
+
 def generate_derived_files() -> None:
     generate_life_discount_curves()
     generate_summary()
+    generate_predictions()
 
 
 def main():
@@ -1034,6 +1298,7 @@ def main():
     generate_life_discount_curves()
     generate_preset_model_data()
     generate_summary()
+    generate_predictions()
 
     changed_count = sum(1 for ok in changed.values() if ok)
     print("=" * 68)
