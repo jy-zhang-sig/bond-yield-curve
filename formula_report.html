@@ -1,0 +1,677 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>预定利率研究值计算逻辑与数据源说明</title>
+    <style>
+    [id*="codebuddy"], [class*="codebuddy"], [id*="powered"], [class*="powered"],
+    [id*="watermark"], [class*="watermark"], [data-platform], [data-powered-by] {
+        display: none !important; visibility: hidden !important; opacity: 0 !important;
+    }
+    </style>
+    <script>
+    (function(){
+        function clean(){
+            document.querySelectorAll('*').forEach(function(el){
+                var id=(el.id||'').toLowerCase(),cls=(typeof el.className==='string'?el.className:'').toLowerCase();
+                if(id.indexOf('codebuddy')!==-1||cls.indexOf('codebuddy')!==-1){el.remove();return;}
+                if(el.children.length===0&&el.textContent&&el.textContent.toLowerCase().indexOf('codebuddy')!==-1){el.remove();}
+            });
+        }
+        if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',clean);}else{clean();}
+        new MutationObserver(function(m){m.forEach(function(mu){mu.addedNodes.forEach(function(n){
+            if(n.nodeType===1){var t=(n.textContent||'').toLowerCase(),id=(n.id||'').toLowerCase(),cls=(typeof n.className==='string'?n.className:'').toLowerCase();
+            if(t.indexOf('codebuddy')!==-1||id.indexOf('codebuddy')!==-1||cls.indexOf('codebuddy')!==-1){n.remove();}}
+        });});}).observe(document.documentElement,{childList:true,subtree:true});
+    })();
+    </script>
+    <style>
+        :root {
+            --primary-color: #2563eb;
+            --secondary-color: #3b82f6;
+            --success-color: #10b981;
+            --warning-color: #f59e0b;
+            --danger-color: #ef4444;
+            --bg-color: #f8fafc;
+            --card-bg: #ffffff;
+            --text-primary: #1e293b;
+            --text-secondary: #64748b;
+            --border-color: #e2e8f0;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans SC", sans-serif;
+            background: var(--bg-color);
+            color: var(--text-primary);
+            line-height: 1.8;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 3rem;
+            padding: 3rem 2rem;
+            background: linear-gradient(135deg, var(--primary-color), #1d4ed8);
+            color: white;
+            border-radius: 16px;
+            box-shadow: 0 4px 20px rgba(37, 99, 235, 0.3);
+        }
+
+        header h1 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 1rem;
+        }
+
+        header p {
+            font-size: 1.1rem;
+            opacity: 0.9;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .section {
+            background: var(--card-bg);
+            border-radius: 12px;
+            padding: 2rem;
+            margin-bottom: 2rem;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+            border: 1px solid var(--border-color);
+        }
+
+        .section h2 {
+            font-size: 1.75rem;
+            color: var(--primary-color);
+            margin-bottom: 1.5rem;
+            padding-bottom: 0.75rem;
+            border-bottom: 2px solid var(--border-color);
+        }
+
+        .section h3 {
+            font-size: 1.25rem;
+            color: var(--text-primary);
+            margin-top: 1.5rem;
+            margin-bottom: 1rem;
+        }
+
+        .formula-box {
+            background: #f1f5f9;
+            border-left: 4px solid var(--primary-color);
+            padding: 1.5rem;
+            margin: 1rem 0;
+            border-radius: 0 8px 8px 0;
+            font-family: "SF Mono", Monaco, "Courier New", monospace;
+            font-size: 1rem;
+            line-height: 2;
+        }
+
+        .formula-step {
+            background: white;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin: 1rem 0;
+        }
+
+        .formula-step h4 {
+            color: var(--primary-color);
+            margin-bottom: 0.75rem;
+            font-size: 1.1rem;
+        }
+
+        .data-source {
+            display: flex;
+            align-items: flex-start;
+            padding: 1rem;
+            background: #f8fafc;
+            border-radius: 8px;
+            margin: 0.75rem 0;
+            border: 1px solid var(--border-color);
+        }
+
+        .data-source-icon {
+            font-size: 2rem;
+            margin-right: 1rem;
+            min-width: 3rem;
+            text-align: center;
+        }
+
+        .data-source-content h4 {
+            margin-bottom: 0.5rem;
+            color: var(--text-primary);
+        }
+
+        .data-source-content p {
+            color: var(--text-secondary);
+            font-size: 0.95rem;
+        }
+
+        .data-source-content a {
+            color: var(--primary-color);
+            text-decoration: none;
+            font-weight: 500;
+        }
+
+        .data-source-content a:hover {
+            text-decoration: underline;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1rem 0;
+        }
+
+        table th,
+        table td {
+            padding: 0.75rem 1rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        table th {
+            background: #f1f5f9;
+            font-weight: 600;
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+        }
+
+        table tr:hover {
+            background: #f8fafc;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.875rem;
+            font-weight: 600;
+        }
+
+        .status-success {
+            background: #dcfce7;
+            color: #166534;
+        }
+
+        .status-warning {
+            background: #fef3c7;
+            color: #92400e;
+        }
+
+        .status-info {
+            background: #dbeafe;
+            color: #1e40af;
+        }
+
+        .highlight-box {
+            background: #eff6ff;
+            border: 1px solid #bfdbfe;
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin: 1rem 0;
+        }
+
+        .highlight-box h4 {
+            color: var(--primary-color);
+            margin-bottom: 0.75rem;
+        }
+
+        .code-block {
+            background: #1e293b;
+            color: #e2e8f0;
+            padding: 1rem;
+            border-radius: 8px;
+            font-family: "SF Mono", Monaco, monospace;
+            font-size: 0.9rem;
+            overflow-x: auto;
+            margin: 1rem 0;
+        }
+
+        .backtest-summary {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin: 1.5rem 0;
+        }
+
+        .backtest-card {
+            background: linear-gradient(135deg, #f0f9ff, #e0f2fe);
+            border: 1px solid #bae6fd;
+            border-radius: 8px;
+            padding: 1.25rem;
+            text-align: center;
+        }
+
+        .backtest-card h4 {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            margin-bottom: 0.5rem;
+        }
+
+        .backtest-card .value {
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: var(--primary-color);
+        }
+
+        .backtest-card .detail {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-top: 0.25rem;
+        }
+
+        .limitation-box {
+            background: #fffbeb;
+            border-left: 4px solid var(--warning-color);
+            padding: 1.5rem;
+            border-radius: 0 8px 8px 0;
+            margin: 1rem 0;
+        }
+
+        .limitation-box h4 {
+            color: #92400e;
+            margin-bottom: 0.75rem;
+        }
+
+        .footer {
+            text-align: center;
+            padding: 2rem;
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+            margin-top: 2rem;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 1rem;
+            }
+
+            header h1 {
+                font-size: 1.75rem;
+            }
+
+            .backtest-summary {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📊 预定利率研究值计算逻辑与数据源说明</h1>
+            <p>基于公开数据源的预定利率研究值计算模型解析与回溯验证报告</p>
+            <p style="font-size: 0.9rem; margin-top: 1rem; opacity: 0.8;">
+                报告日期：2026年7月 | 计算模型版本：v2.1（动态税收溢价 + 分段累加法）
+            </p>
+        </header>
+
+        <!-- 摘要 -->
+        <div class="section">
+            <h2>📋 报告摘要</h2>
+            <div class="highlight-box">
+                <h4>核心结论</h4>
+                <p>本报告基于<b>完全公开的数据源</b>重构了预定利率研究值的计算模型，并对2024Q4至2026Q1共6个季度进行了回溯验证。结果显示（采用<b>分段累加</b>系数实现 + <b>动态税收溢价</b>）：</p>
+                <ul style="margin-top: 0.75rem; margin-left: 1.5rem;">
+                    <li>所有季度的预测值与实际值差异均在 <b>5 BP 以内</b>，达到"高度吻合"标准</li>
+                    <li>平均绝对误差：<b>1.42 BP</b></li>
+                    <li>最大误差：<b>2.69 BP</b> (2025Q1)</li>
+                    <li>最小误差：<b>0.42 BP</b> (2024Q4)</li>
+                </ul>
+                <p style="margin-top: 0.75rem;">这表明：使用公开数据（LPR、六大行定存利率、10年期国债收益率）并配合<b>动态税收溢价</b>（国开债/进出口债与国债收益率之差的250/750日移动平均），可较准确地还原预定利率研究值的计算过程。</p>
+            </div>
+        </div>
+
+        <!-- 计算公式 -->
+        <div class="section">
+            <h2>🔢 预定利率研究值计算公式</h2>
+            
+            <div class="formula-step">
+                <h4>第一步：计算参考利率</h4>
+                <div class="formula-box">
+参考利率 = 6个月移动平均[ (5年期LPR + 5年期定期存款利率) ÷ 2 ]
+
+其中：
+- 5年期LPR：取中国货币网公布的5年期以上LPR
+- 5年期定期存款利率：取六大国有银行（工农中建交邮）挂牌利率的算术平均值
+- 6个月移动平均：取计算日前6个月的月度数据计算平均值
+                </div>
+            </div>
+
+            <div class="formula-step">
+                <h4>第二步：计算税收溢价</h4>
+                <div class="formula-box">
+税收溢价 = MAX( 国开债收益率 - 国债收益率, 进出口债收益率 - 国债收益率 ) 的移动平均
+
+其中：
+- 使用250日移动平均（对应参考利率的6个月窗口）
+- 使用750日移动平均（对应基础回报水平的长期趋势）
+- 取国开债和进出口债两者与国债利差的最大值
+                </div>
+                <div class="limitation-box" style="background:#eff6ff; border-left-color: var(--primary-color);">
+                    <h4>✅ 数据说明（已动态获取）</h4>
+                    <p>税收溢价所需的国开债/进出口债日频收益率<b>已动态获取</b>，不再使用静态近似。混合数据源如下：</p>
+                    <ul style="margin-top: 0.5rem; margin-left: 1.5rem;">
+                        <li>2026-04-01 至 2026-07-08（近67天）：中国货币网真实值（国开 CYCC021 / 进出口 CYCC024）</li>
+                        <li>2002-01-04 至 2026-03-31（其余6055天）：中债估值 Excel 补齐</li>
+                        <li>合计 <b>6122 条，cdb/ieb 零缺口</b></li>
+                    </ul>
+                    <p style="margin-top: 0.5rem;">税收溢价按 250/750 日移动平均实时计算，取国开、进出口与国债利差两者最大值。以2025Q4为例：spread_250 = 0.1386%、spread_750 = 0.1643%。</p>
+                </div>
+            </div>
+
+            <div class="formula-step">
+                <h4>第三步：计算基础回报水平</h4>
+                <div class="formula-box">
+基础回报水平 = MIN( 
+    （10年期国债到期收益率 + 税收溢价）250日移动平均,
+    （10年期国债到期收益率 + 税收溢价）750日移动平均
+)
+
+说明：
+- 取短端（250日）和长端（750日）两者中的较低值，体现审慎原则
+- 10年期国债收益率数据来自中国货币网日频数据
+                </div>
+            </div>
+
+            <div class="formula-step">
+                <h4>第四步：计算系数调节前预定利率</h4>
+                <div class="formula-box">
+系数调节前利率 = MIN( 参考利率, 基础回报水平 )
+                </div>
+            </div>
+
+            <div class="formula-step">
+                <h4>第五步：分段系数调节</h4>
+                <div class="formula-box">
+最终预定利率 = Σ [ 每段区间长度 × 对应系数 ]
+
+分段调节系数表：
+┌─────────────────┬──────────┐
+│ 利率区间 (%)     │ 调节系数  │
+├─────────────────┼──────────┤
+│ (0.00, 1.00]   │   1.00   │
+│ (1.00, 2.00]   │   1.00   │
+│ (2.00, 2.50]   │   0.95   │
+│ (2.50, 3.00]   │   0.95   │
+│ (3.00, 3.50]   │   0.50   │
+│ (3.50, 4.00]   │   0.50   │
+│ (4.00, 10.00]  │   0.30   │
+└─────────────────┴──────────┘
+
+示例：
+若系数调节前利率 = 2.3534%
+计算过程：
+  (1.00 - 0.00) × 1.00 = 1.00%
+  (2.00 - 1.00) × 1.00 = 1.00%
+  (2.3534 - 2.00) × 0.95 = 0.3357%
+  最终 = 1.00 + 1.00 + 0.3357 = 2.3357% ≈ 2.34%
+                </div>
+            </div>
+        </div>
+
+        <!-- 数据源说明 -->
+        <div class="section">
+            <h2>🌐 数据源详细说明</h2>
+            
+            <div class="data-source">
+                <div class="data-source-icon">📈</div>
+                <div class="data-source-content">
+                    <h4>1. 5年期LPR（贷款市场报价利率）</h4>
+                    <p><strong>来源：</strong>中国货币网 (www.chinamoney.com.cn) 及公开历史数据汇总</p>
+                    <p><strong>获取方式：</strong>通过网络公开历史数据整理</p>
+                    <p><strong>数据频率：</strong>月度（只在实际调整月份变化）</p>
+                    <p><strong>历史变更记录：</strong></p>
+                    <table style="margin-top: 0.5rem; font-size: 0.9rem;">
+                        <tr>
+                            <th>调整日期</th>
+                            <th>5年期LPR (%)</th>
+                            <th>调整幅度 (BP)</th>
+                        </tr>
+                        <tr><td>2023-06-20</td><td>4.20</td><td>-10</td></tr>
+                        <tr><td>2024-02-20</td><td>3.95</td><td>-25</td></tr>
+                        <tr><td>2024-07-22</td><td>3.85</td><td>-10</td></tr>
+                        <tr><td>2024-10-21</td><td>3.60</td><td>-25</td></tr>
+                        <tr><td>2025-05-20</td><td>3.50</td><td>-10</td></tr>
+                    </table>
+                </div>
+            </div>
+
+            <div class="data-source">
+                <div class="data-source-icon">🏦</div>
+                <div class="data-source-content">
+                    <h4>2. 六大国有银行5年期定期存款利率</h4>
+                    <p><strong>来源：</strong>工商银行、农业银行、中国银行、建设银行、交通银行、邮储银行官网公告</p>
+                    <p><strong>参考链接：</strong></p>
+                    <ul style="margin-left: 1.5rem; color: var(--text-secondary); font-size: 0.95rem;">
+                        <li>工商银行：<a href="https://www.icbc.com.cn" target="_blank">www.icbc.com.cn</a> → 存贷款基准利率</li>
+                        <li>农业银行：<a href="https://www.abchina.com" target="_blank">www.abchina.com</a> → 存款利率</li>
+                        <li>中国银行：<a href="https://www.boc.cn" target="_blank">www.boc.cn</a> → 存款利率</li>
+                        <li>建设银行：<a href="https://www.ccb.com" target="_blank">www.ccb.com</a> → 存款利率</li>
+                        <li>交通银行：<a href="https://www.bankcomm.com" target="_blank">www.bankcomm.com</a> → 存款利率</li>
+                        <li>邮储银行：<a href="https://www.psbc.com" target="_blank">www.psbc.com</a> → 存款利率</li>
+                    </ul>
+                    <p style="margin-top: 0.75rem;"><strong>历史变更记录：</strong></p>
+                    <table style="margin-top: 0.5rem; font-size: 0.9rem;">
+                        <tr>
+                            <th>调整日期</th>
+                            <th>5年期定存 (%)</th>
+                            <th>调整幅度 (BP)</th>
+                        </tr>
+                        <tr><td>2023-12-22前</td><td>2.25</td><td>-</td></tr>
+                        <tr><td>2023-12-22</td><td>2.00</td><td>-25</td></tr>
+                        <tr><td>2024-07-25</td><td>1.80</td><td>-20</td></tr>
+                        <tr><td>2024-10-18</td><td>1.55</td><td>-25</td></tr>
+                        <tr><td>2025-05-20</td><td>1.30</td><td>-25</td></tr>
+                    </table>
+                    <p style="margin-top: 0.75rem; color: var(--warning-color); font-size: 0.9rem;">
+                        ⚠️ 注：各银行挂牌利率可能略有差异，本模型采用六大行统一调整的平均值/代表值。
+                    </p>
+                </div>
+            </div>
+
+            <div class="data-source">
+                <div class="data-source-icon">📊</div>
+                <div class="data-source-content">
+                    <h4>3. 10年期国债收益率（日频数据）</h4>
+                    <p><strong>来源：</strong>东方财富数据中心（datacenter.eastmoney.com）直连获取（规避 akshare 接口无超时挂死问题）</p>
+                    <p><strong>数据接口：</strong>东方财富 RPTA_WEB_TREASURYYIELD（10年期国债 EMM00166466）</p>
+                    <p><strong>数据范围：</strong>2002-01-04 至 2026-07-08（共6122条记录，gov_10y 零缺失）</p>
+                    <p><strong>数据频率：</strong>日频</p>
+                    <p><strong>计算用途：</strong></p>
+                    <ul style="margin-left: 1.5rem; margin-top: 0.5rem;">
+                        <li>250日移动平均（约1年交易日）</li>
+                        <li>750日移动平均（约3年交易日）</li>
+                    </ul>
+                    <p style="margin-top: 0.75rem;"><strong>验证：</strong>数据已与公开市场数据交叉验证，数值单位为百分比（如2.146表示2.146%）。</p>
+                </div>
+            </div>
+
+            <div class="data-source">
+                <div class="data-source-icon">⚠️</div>
+                <div class="data-source-content">
+                    <h4>4. 国开债/进出口债收益率（税收溢价数据源）</h4>
+                    <p><strong>来源：</strong>中国货币网（www.chinamoney.com.cn，国开 CYCC021 / 进出口 CYCC024）及中债估值（中国债券信息网 www.chinabond.com.cn）Excel 补齐</p>
+                    <p><strong>获取情况：</strong><span class="status-badge status-success">已动态获取</span> 近67天使用中国货币网真实日频值，其余6055天使用中债估值 Excel 补齐，合计 <b>6122 条零缺口</b></p>
+                    <p><strong>税收溢价计算：</strong>取 <code>MAX(国开债−国债, 进出口债−国债)</code> 的 250 日与 750 日移动平均；<b>不再使用固定静态利差</b>。以2025Q4为例：spread_250 = 0.1386%、spread_750 = 0.1643%。</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- 回溯验证结果 -->
+        <div class="section">
+            <h2>✅ 回溯验证结果</h2>
+            <p style="margin-bottom: 1.5rem;">使用上述公开数据源和计算公式（<b>动态税收溢价 + 分段累加系数</b>），对2024Q4至2026Q1共6个季度进行回溯验证，结果如下：</p>
+
+            <div class="backtest-summary">
+                <div class="backtest-card">
+                    <h4>平均绝对误差</h4>
+                    <div class="value">1.42 BP</div>
+                    <div class="detail">6个季度</div>
+                </div>
+                <div class="backtest-card">
+                    <h4>最大误差</h4>
+                    <div class="value" style="color: var(--warning-color);">2.69 BP</div>
+                    <div class="detail">2025Q1</div>
+                </div>
+                <div class="backtest-card">
+                    <h4>最小误差</h4>
+                    <div class="value" style="color: var(--success-color);">0.42 BP</div>
+                    <div class="detail">2024Q4</div>
+                </div>
+                <div class="backtest-card">
+                    <h4>吻合季度</h4>
+                    <div class="value">6 / 6</div>
+                    <div class="detail">高度吻合 (误差<5BP)</div>
+                </div>
+            </div>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>季度</th>
+                        <th>计算日期</th>
+                        <th>预测值 (%)</th>
+                        <th>实际值 (%)</th>
+                        <th>差异 (BP)</th>
+                        <th>吻合度</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>2024Q4</td>
+                        <td>2024-12-31</td>
+                        <td>2.3358</td>
+                        <td>2.34</td>
+                        <td>-0.42</td>
+                        <td><span class="status-badge status-success">高度吻合</span></td>
+                    </tr>
+                    <tr>
+                        <td>2025Q1</td>
+                        <td>2025-03-31</td>
+                        <td>2.1569</td>
+                        <td>2.13</td>
+                        <td>+2.69</td>
+                        <td><span class="status-badge status-success">高度吻合</span></td>
+                    </tr>
+                    <tr>
+                        <td>2025Q2</td>
+                        <td>2025-06-30</td>
+                        <td>2.0122</td>
+                        <td>1.99</td>
+                        <td>+2.22</td>
+                        <td><span class="status-badge status-success">高度吻合</span></td>
+                    </tr>
+                    <tr>
+                        <td>2025Q3</td>
+                        <td>2025-09-30</td>
+                        <td>1.9160</td>
+                        <td>1.90</td>
+                        <td>+1.60</td>
+                        <td><span class="status-badge status-success">高度吻合</span></td>
+                    </tr>
+                    <tr>
+                        <td>2025Q4</td>
+                        <td>2025-12-31</td>
+                        <td>1.8819</td>
+                        <td>1.89</td>
+                        <td>-0.81</td>
+                        <td><span class="status-badge status-success">高度吻合</span></td>
+                    </tr>
+                    <tr>
+                        <td>2026Q1</td>
+                        <td>2026-03-31</td>
+                        <td>1.9223</td>
+                        <td>1.93</td>
+                        <td>-0.77</td>
+                        <td><span class="status-badge status-success">高度吻合</span></td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <div class="highlight-box" style="margin-top: 1.5rem;">
+                <h4>计算示例：2025Q4（最新季度，动态税收溢价）</h4>
+                <div class="code-block" style="margin-top: 0.75rem;">
+【计算日期】2025-12-31
+【参考利率计算窗口】2025-07 至 2025-12 (6个月)
+
+步骤1: 计算参考利率
+  6个月 (LPR+定存)/2 月度平均 = 2.4000%
+  （2025-05-20 起 LPR=3.50%、定存=1.30% 维持稳定）
+
+步骤2: 计算基础回报水平
+  10年期国债MA250 (2025-12-31前250交易日) = 1.7433%
+  10年期国债MA750 (2025-12-31前750交易日) = 2.2300%
+  税收溢价(250MA) = MAX(国开−国债, 进出口−国债) 250日MA = 0.1386%
+  税收溢价(750MA) = MAX(...) 750日MA = 0.1643%
+  250MA合计 = 1.7433% + 0.1386% = 1.8819%
+  750MA合计 = 2.2300% + 0.1643% = 2.3943%
+  基础回报水平 = MIN(1.8819%, 2.3943%) = 1.8819%
+
+步骤3: 系数调节前
+  调节前 = MIN(2.4000%, 1.8819%) = 1.8819%
+
+步骤4: 分段系数调节
+  1.8819% < 2.00%，落入系数=1.00 区间
+  最终 = 1.8819% ≈ 1.88%  (与实际公布值 1.89% 一致，差异 0.81 BP)
+                </div>
+                <p style="margin-top: 0.75rem; color: var(--success-color); font-size: 0.9rem;">
+                    ✅ 以上为完整计算示例，基础回报水平与分段系数调节均与当前部署脚本 <code>scripts/update_predictions.py</code> 一致。
+                </p>
+            </div>
+        </div>
+
+        <!-- 结论与建议 -->
+        <div class="section">
+            <h2>💡 结论与建议</h2>
+            
+            <h3>主要结论</h3>
+            <ol style="margin-left: 1.5rem; margin-top: 0.75rem;">
+                <li><strong>模型有效性：</strong>使用公开数据（LPR、六大行定存利率、10年期国债收益率）配合<b>动态税收溢价</b>，可以较准确地还原预定利率研究值的计算过程。回溯验证显示6个季度误差均在5BP以内（平均1.42BP）。</li>
+                <li><strong>数据完整性：</strong>税收溢价所需的国开债/进出口债日频数据已通过混合数据源（近67天中国货币网真实值 + 6055天中债估值 Excel 补齐，共6122条零缺口）获取，模型完整性显著提升。</li>
+                <li><strong>计算逻辑：</strong>预定利率研究值的计算逻辑清晰，主要包括参考利率、基础回报水平、分段系数调节三个核心步骤。</li>
+            </ol>
+
+            <h3>改进建议</h3>
+            <ol style="margin-left: 1.5rem; margin-top: 0.75rem;">
+                <li><strong>数据源增强：</strong>持续通过中国货币网增量积累国开/进出口债真实日频值，进一步缩短对中债估值 Excel 的依赖，保持税收溢价时效。</li>
+                <li><strong>实时更新：</strong>建立自动化的数据更新机制，每次LPR或存款利率调整后自动重新计算预测值。</li>
+                <li><strong>敏感性分析：</strong>分析各输入变量（LPR、定存利率、国债收益率）对最终研究值的影响程度，识别关键驱动因子。</li>
+                <li><strong>预测功能：</strong>基于当前数据，建立2026年各季度的预测模型，为业务决策提供参考。</li>
+            </ol>
+
+            <h3>报告使用说明</h3>
+            <div class="highlight-box" style="margin-top: 1rem;">
+                <p>本报告及配套计算脚本 <code>scripts/update_predictions.py</code> 可用于：</p>
+                <ul style="margin-left: 1.5rem; margin-top: 0.5rem;">
+                    <li>理解预定利率研究值的计算逻辑</li>
+                    <li>验证历史研究值的计算结果</li>
+                    <li>基于公开数据预测未来季度的研究值</li>
+                    <li>作为内部培训和知识传递材料</li>
+                </ul>
+                <p style="margin-top: 0.75rem; color: var(--danger-color); font-size: 0.9rem;">
+                    ⚠️ 免责声明：本报告仅供学术研究和分析参考使用，不构成任何投资或业务建议。实际预定利率研究值以中国保险行业协会官方公布为准。
+                </p>
+            </div>
+        </div>
+
+        <div class="footer">
+            <p>报告编制：基于公开数据源的预定利率研究值计算模型</p>
+            <p style="margin-top: 0.5rem;">计算脚本：<code>scripts/update_predictions.py</code> | 数据更新至：2026年7月</p>
+            <p style="margin-top: 0.5rem;">© 2026 预定利率研究值分析项目</p>
+        </div>
+    </div>
+</body>
+</html>
